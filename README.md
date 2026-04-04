@@ -1,0 +1,1 @@
+# karpenter-hpa-autoscaling
