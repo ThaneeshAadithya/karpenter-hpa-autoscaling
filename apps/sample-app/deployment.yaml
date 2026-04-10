@@ -1,0 +1,157 @@
+# Reference application deployment
+# Resource requests set correctly — critical for HPA and Karpenter accuracy
+# Without correct requests: HPA metrics are wrong, Karpenter over-provisions
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-api
+  namespace: backend
+  labels:
+    app: backend-api
+    version: "1.0"
+spec:
+  replicas: 2          # Starting replicas — HPA takes over immediately
+  selector:
+    matchLabels:
+      app: backend-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 2
+      maxUnavailable: 0  # Zero-downtime rolling updates
+  template:
+    metadata:
+      labels:
+        app: backend-api
+        nodepool: general    # Karpenter NodePool selection via label
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: backend-api-sa
+      terminationGracePeriodSeconds: 90   # Long enough for spot interruption drain
+
+      # ── Security ────────────────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Spread across AZs and nodes ─────────────────────────────────────────
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: backend-api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: backend-api
+
+      # ── Anti-affinity: don't co-locate replicas ──────────────────────────────
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: backend-api
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: backend-api
+          image: "ECR_REGISTRY/backend-api:IMAGE_TAG"
+          imagePullPolicy: Always
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          ports:
+            - containerPort: 8080
+              name: http
+
+          # ── CRITICAL: resource requests must reflect actual usage ──────────
+          # Measure with: kubectl top pod + Grafana VPA recommendations
+          # HPA uses requests as the denominator for % utilisation
+          # Karpenter sizes nodes based on total requested resources
+          resources:
+            requests:
+              cpu: "200m"       # P50 CPU usage measured over 7 days
+              memory: "256Mi"   # P90 memory usage + 20% headroom
+            limits:
+              cpu: "1000m"      # Allow burst to 5x (handles spikes before HPA kicks in)
+              memory: "512Mi"   # Hard limit — OOMKill before node pressure
+
+          # ── Probes ──────────────────────────────────────────────────────────
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 3      # Up to 90s startup time
+
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
+            successThreshold: 1
+
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 3
+
+          env:
+            - name: PORT
+              value: "8080"
+            - name: LOG_LEVEL
+              value: "info"
+            - name: GOMAXPROCS       # Match container CPU limit for Go apps
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.cpu
+                  divisor: "1"
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-api
+  namespace: backend
+  labels:
+    app: backend-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    app: backend-api

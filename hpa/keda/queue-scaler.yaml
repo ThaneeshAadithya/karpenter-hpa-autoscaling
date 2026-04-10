@@ -1,0 +1,55 @@
+# KEDA ScaledObject — scale on SQS queue depth
+# For async/queue-based workloads (batch processors, event consumers)
+# Scales from 0 to N based on message backlog
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: queue-processor-scaler
+  namespace: processing
+  annotations:
+    description: "KEDA scaler — SQS queue depth drives pod count"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: queue-processor
+
+  pollingInterval: 15        # Check SQS every 15 seconds
+  cooldownPeriod:  300       # 5 min after last message before scaling to 0
+  idleReplicaCount: 0        # Scale to ZERO when queue empty (cost saving)
+  minReplicaCount:  0
+  maxReplicaCount:  50
+
+  triggers:
+    # ── SQS queue depth ──────────────────────────────────────────────────────
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: keda-sqs-auth
+      metadata:
+        queueURL: "https://sqs.us-east-1.amazonaws.com/ACCOUNT_ID/my-queue"
+        queueLength: "10"          # 1 pod per 10 messages in queue
+        awsRegion: "us-east-1"
+        identityOwner: pod         # Use IRSA — no static credentials
+
+  advanced:
+    restoreToOriginalReplicaCount: true
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 200
+              periodSeconds: 30
+        scaleDown:
+          stabilizationWindowSeconds: 300
+---
+# TriggerAuthentication — IRSA for KEDA to read SQS
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: keda-sqs-auth
+  namespace: processing
+spec:
+  podIdentity:
+    provider: aws

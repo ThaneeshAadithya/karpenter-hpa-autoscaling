@@ -1,0 +1,120 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: autoscaling-alerts
+  namespace: monitoring
+  labels:
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: karpenter.scaling
+      rules:
+        # Alert: nodes taking too long to provision
+        - alert: KarpenterNodeProvisioningSlow
+          expr: |
+            karpenter_nodes_allocatable{} == 0
+            and on() kube_pod_status_phase{phase="Pending"} > 3
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Karpenter not provisioning nodes — {{ $value }} pods pending"
+            description: |
+              Pods have been pending for >3m with no new nodes.
+              Check: kubectl get nodeclaim && kubectl logs -n kube-system -l app.kubernetes.io/name=karpenter
+            runbook_url: "https://github.com/YOUR_ORG/karpenter-hpa-autoscaling/docs/runbook-karpenter.md"
+
+        # Alert: Karpenter controller down
+        - alert: KarpenterControllerDown
+          expr: up{job="karpenter"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Karpenter controller is down"
+            description: "Karpenter metrics endpoint unreachable — node provisioning may be broken"
+
+        # Alert: Spot interruption rate high
+        - alert: KarpenterHighSpotInterruptionRate
+          expr: |
+            rate(karpenter_interruption_received_messages_total[10m]) > 0.5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High spot interruption rate — {{ $value | humanize }} interruptions/sec"
+            description: "Consider switching affected NodePool to on-demand capacity"
+
+        # Alert: Node consolidation blocked (PDB preventing it)
+        - alert: KarpenterConsolidationBlocked
+          expr: |
+            karpenter_disruption_evaluation_duration_seconds{p50} > 30
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "Karpenter consolidation taking too long — PDB may be blocking"
+
+    - name: hpa.scaling
+      rules:
+        # Alert: HPA at max replicas (can't scale further)
+        - alert: HPAAtMaxReplicas
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas
+            == kube_horizontalpodautoscaler_spec_max_replicas
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} at max replicas"
+            description: |
+              HPA has hit its max replica limit. If load continues, service will degrade.
+              Action: Increase maxReplicas or reduce per-pod resource requests.
+
+        # Alert: HPA unable to scale (missing metrics)
+        - alert: HPAMissingMetrics
+          expr: |
+            kube_horizontalpodautoscaler_status_condition{
+              condition="ScalingActive",
+              status="false"
+            } == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} cannot scale — missing metrics"
+            description: "Check Prometheus adapter and custom metrics pipeline"
+
+        # Alert: HPA oscillating (flapping up/down rapidly)
+        - alert: HPAFlapping
+          expr: |
+            changes(kube_horizontalpodautoscaler_status_current_replicas[10m]) > 4
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} is flapping"
+            description: "Replica count changed >4 times in 10min — check stabilisation window settings"
+
+    - name: autoscaling.recording
+      interval: 30s
+      rules:
+        - record: karpenter:nodes_by_pool:count
+          expr: |
+            count by (nodepool) (
+              kube_node_labels{label_nodepool!=""}
+            )
+
+        - record: hpa:scaling_decisions:rate5m
+          expr: |
+            rate(kube_horizontalpodautoscaler_status_current_replicas[5m])
+
+        - record: cluster:pending_pods:count
+          expr: |
+            count(kube_pod_status_phase{phase="Pending"}) or vector(0)
+
+        - record: cluster:spot_node_ratio:ratio
+          expr: |
+            count(kube_node_labels{label_node_type="spot"}) /
+            count(kube_node_info)

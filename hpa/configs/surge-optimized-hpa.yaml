@@ -1,0 +1,66 @@
+# Surge-optimised HPA — for services that need < 30s pod scale time
+# Trades cost (more idle replicas) for speed (instant capacity available)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: surge-optimized-hpa
+  namespace: backend
+  annotations:
+    description: "Optimised for 2-3x traffic surges — aggressive scale-up, slow scale-down"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: high-traffic-service
+
+  minReplicas: 5          # Higher minimum — always ready for burst
+  maxReplicas: 100
+
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50  # Lower threshold = scale earlier, before saturation
+
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "80"      # Conservative RPS target — scale before degradation
+
+    # ── Predictive: scale based on request queue depth ───────────────────────
+    - type: Object
+      object:
+        metric:
+          name: nginx_ingress_upstream_latency_seconds
+        describedObject:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          name: high-traffic-service
+        target:
+          type: Value
+          value: "200m"           # 200ms p50 — scale if latency rising
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 200              # Triple pods if needed
+          periodSeconds: 15
+        - type: Pods
+          value: 20
+          periodSeconds: 15
+      selectPolicy: Max
+
+    scaleDown:
+      stabilizationWindowSeconds: 600   # 10 min — aggressive scale-down prevention
+      policies:
+        - type: Percent
+          value: 5
+          periodSeconds: 60
+      selectPolicy: Min

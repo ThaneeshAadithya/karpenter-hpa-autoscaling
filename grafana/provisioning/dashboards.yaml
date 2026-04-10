@@ -1,0 +1,11 @@
+apiVersion: 1
+providers:
+  - name: Autoscaling
+    orgId: 1
+    folder: Autoscaling
+    folderUid: autoscaling
+    type: file
+    disableDeletion: true
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

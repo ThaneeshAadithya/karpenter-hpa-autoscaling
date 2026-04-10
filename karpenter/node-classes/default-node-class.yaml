@@ -1,0 +1,119 @@
+# EC2NodeClass — default class for all NodePools
+# AL2 AMI, gp3 EBS encrypted, IMDSv2 enforced, SSM managed
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: default
+  annotations:
+    description: "Default node class — used by general and compute NodePools"
+spec:
+  # AMI family — AL2 for EKS compatibility
+  amiFamily: AL2
+
+  # IAM role for nodes (must exist before Karpenter runs)
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+
+  # Subnet discovery via tags
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+        kubernetes.io/role/internal-elb: "1"
+
+  # Security group discovery via tags
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  # EBS root volume — gp3, encrypted, 100 GiB
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 100Gi
+        volumeType: gp3
+        iops: 3000
+        throughput: 125
+        encrypted: true
+        deleteOnTermination: true
+
+  # IMDSv2 enforced — prevents SSRF credential theft
+  metadataOptions:
+    httpEndpoint: enabled
+    httpProtocolIPv6: disabled
+    httpPutResponseHopLimit: 1       # IMDSv2 — 1 hop only
+    httpTokens: required             # Require session tokens
+
+  # User data — install SSM agent, configure kubelet
+  userData: |
+    #!/bin/bash
+    set -ex
+    # SSM agent for node access without bastion
+    yum install -y amazon-ssm-agent
+    systemctl enable amazon-ssm-agent
+    systemctl start amazon-ssm-agent
+
+    # Kubelet config — reserved resources
+    cat > /etc/kubernetes/kubelet/kubelet-config.json <<KUBELET
+    {
+      "systemReserved": {
+        "cpu": "100m",
+        "memory": "200Mi"
+      },
+      "kubeReserved": {
+        "cpu": "100m",
+        "memory": "300Mi",
+        "ephemeral-storage": "1Gi"
+      },
+      "evictionHard": {
+        "memory.available": "200Mi",
+        "nodefs.available": "10%"
+      },
+      "maxPods": 110
+    }
+    KUBELET
+
+  tags:
+    ManagedBy: karpenter
+    Cluster: "${CLUSTER_NAME}"
+    Environment: "${ENVIRONMENT}"
+---
+# GPU node class — for ML workloads (prod only)
+apiVersion: karpenter.k8s.aws/v1
+kind: EC2NodeClass
+metadata:
+  name: gpu
+  annotations:
+    description: "GPU node class — g4dn/g5 instances for ML inference"
+spec:
+  amiFamily: AL2
+  role: "KarpenterNodeRole-${CLUSTER_NAME}"
+
+  subnetSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  securityGroupSelectorTerms:
+    - tags:
+        karpenter.sh/discovery: "${CLUSTER_NAME}"
+
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 200Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true
+
+  metadataOptions:
+    httpTokens: required
+    httpPutResponseHopLimit: 1
+
+  userData: |
+    #!/bin/bash
+    # Install NVIDIA drivers for GPU instances
+    yum install -y amazon-ssm-agent
+    systemctl enable amazon-ssm-agent --now
+
+  tags:
+    ManagedBy: karpenter
+    NodeType: gpu
+    Cluster: "${CLUSTER_NAME}"

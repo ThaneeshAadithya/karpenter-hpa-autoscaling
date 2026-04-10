@@ -1,0 +1,35 @@
+# Karpenter Disruption configuration reference
+# This file documents the disruption settings used per NodePool.
+# Applied inline in node-pools/*.yaml — this file is reference documentation.
+
+# ── Consolidation strategy decision matrix ────────────────────────────────────
+#
+# NodePool             Policy                    When            Notes
+# ─────────────────────────────────────────────────────────────────────────────
+# general              WhenEmptyOrUnderutilized  30s             Default — safe for stateless
+# compute-optimized    WhenEmptyOrUnderutilized  1m              Batch jobs may be long-running
+# memory-optimized     WhenEmpty                 5m              Stateful — conservative
+# spot-burst           WhenEmptyOrUnderutilized  30s             Aggressive — cheap nodes
+#
+# ── Budget recommendations ────────────────────────────────────────────────────
+#
+# Development:  nodes: "30%"  — fast consolidation, low cost priority
+# Staging:      nodes: "20%"  — moderate
+# Production:   nodes: "10%"  — conservative, protect against cascading evictions
+#               schedule: business hours → nodes: "0"  — no disruptions during peak
+#
+# ── Interaction with PodDisruptionBudgets ────────────────────────────────────
+#
+# Karpenter RESPECTS PDBs during disruption.
+# If a pod's PDB would be violated, Karpenter will NOT evict it.
+# This means: if all pods have maxUnavailable: 0, consolidation is blocked.
+# Ensure PDBs allow SOME disruption (minAvailable < replicas).
+#
+# ── Spot interruption handling ────────────────────────────────────────────────
+#
+# Karpenter watches the EC2 Spot interruption queue (SQS).
+# When a spot instance gets a 2-minute termination notice:
+#   1. Karpenter cordons the node
+#   2. Karpenter drains pods (respecting PDBs and grace periods)
+#   3. Karpenter provisions replacement nodes
+# This is why spot workloads should have terminationGracePeriodSeconds >= 90s.

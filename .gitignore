@@ -1,0 +1,15 @@
+.terraform/
+.terraform.lock.hcl
+*.tfplan
+*.tfstate
+*.tfstate.backup
+results/
+*.json.gz
+summary.html
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.vscode/
+.idea/
+*.swp

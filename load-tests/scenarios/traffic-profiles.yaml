@@ -1,0 +1,52 @@
+# Traffic profile definitions for load tests
+# Reference these in k6/locust scripts or CI pipeline
+
+profiles:
+  baseline:
+    description: "Normal business day traffic"
+    target_rps: 50
+    users: 30
+    duration: 10m
+    expected_pod_count: 2-4
+    expected_node_count: 2
+
+  surge_2x:
+    description: "2x traffic spike — typical flash sale start"
+    target_rps: 100
+    users: 60
+    ramp_duration: 30s
+    hold_duration: 5m
+    expected_pod_count: 6-10
+    expected_node_count: 3-4
+    expected_scale_time: 90s
+    p99_slo_ms: 500
+
+  surge_3x:
+    description: "3x traffic spike — viral event"
+    target_rps: 150
+    users: 100
+    ramp_duration: 30s
+    hold_duration: 5m
+    expected_pod_count: 15-20
+    expected_node_count: 5-7
+    expected_scale_time: 90s
+    p99_slo_ms: 500
+
+  stress:
+    description: "Maximum sustained load — find breaking point"
+    target_rps: 400
+    users: 300
+    ramp_duration: 5m
+    hold_duration: 10m
+    expected_pod_count: 40-50
+    expected_node_count: 12-15
+    p99_slo_ms: 2000
+
+  spike_flash:
+    description: "Instantaneous spike — DDoS-like pattern"
+    target_rps: 500
+    users: 400
+    ramp_duration: 10s
+    hold_duration: 2m
+    expected_pod_count: 50
+    p99_slo_ms: 5000     # Allow degradation during spike — HPA/Karpenter catching up

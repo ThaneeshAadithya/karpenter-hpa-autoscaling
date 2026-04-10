@@ -1,0 +1,57 @@
+# Spot Burst NodePool
+# Pure spot — all instance families allowed for maximum availability
+# Used by: surge handling, non-critical batch, load tests
+# Wide instance selection = less spot interruption risk
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot-burst
+  annotations:
+    description: "Pure Spot — maximum flexibility for burst/surge traffic"
+spec:
+  template:
+    metadata:
+      labels:
+        nodepool: spot-burst
+        node-type: spot
+    spec:
+      nodeClassRef:
+        group: karpenter.k8s.aws
+        kind: EC2NodeClass
+        name: default
+
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]          # Spot only
+
+        # Wide selection = Karpenter can pick cheapest available AZ/type
+        - key: karpenter.k8s.aws/instance-category
+          operator: In
+          values: ["m", "c", "r", "t"]
+
+        - key: karpenter.k8s.aws/instance-generation
+          operator: Gt
+          values: ["3"]
+
+        # Avoid tiny instances that can't run multiple pods
+        - key: karpenter.k8s.aws/instance-cpu
+          operator: Gt
+          values: ["1"]
+
+      taints:
+        - key: spot-burst
+          value: "true"
+          effect: NoSchedule
+
+  limits:
+    cpu: "1000"       # High limit — this is the burst pool
+
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s
+    budgets:
+      - nodes: "30%"  # Aggressive consolidation — spot nodes are cheap

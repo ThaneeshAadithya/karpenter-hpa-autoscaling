@@ -1,0 +1,50 @@
+# PodDisruptionBudgets — ensure safe Karpenter consolidation
+# Without PDBs, Karpenter consolidation can cause service disruption
+
+# ── Critical services — at least 2 replicas always available ──────────────────
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-api-pdb
+  namespace: backend
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: backend-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service-pdb
+  namespace: auth
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: auth-service
+---
+# Payment service — stricter, never allow more than 1 disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-service-pdb
+  namespace: payments
+spec:
+  maxUnavailable: 0    # Zero disruption — payments must not be interrupted
+  selector:
+    matchLabels:
+      app: payment-service
+---
+# General pattern for stateless services — 50% available during disruption
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: stateless-service-pdb
+  namespace: app
+spec:
+  minAvailable: "50%"
+  selector:
+    matchLabels:
+      disruption-policy: standard

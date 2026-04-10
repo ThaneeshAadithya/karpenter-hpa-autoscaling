@@ -1,0 +1,65 @@
+# HPA v2 — multi-metric autoscaling for the sample application
+# Scales on: CPU utilization + memory + custom RPS metric
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-api-hpa
+  namespace: backend
+  annotations:
+    description: "HPA for backend-api — CPU + memory + RPS. Surge: 2→20 in ~30s"
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend-api
+
+  minReplicas: 2
+  maxReplicas: 50
+
+  metrics:
+    # ── Metric 1: CPU utilisation ────────────────────────────────────────────
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60    # Scale at 60% CPU — headroom for spikes
+
+    # ── Metric 2: Memory utilisation ────────────────────────────────────────
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 75
+
+    # ── Metric 3: Requests per second (via Prometheus adapter) ──────────────
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "100"       # 100 RPS per pod target
+
+  behavior:
+    # Scale UP — aggressive (handle surges fast)
+    scaleUp:
+      stabilizationWindowSeconds: 0       # No delay on scale-up
+      policies:
+        - type: Percent
+          value: 100                       # Double pods every 15s
+          periodSeconds: 15
+        - type: Pods
+          value: 10                        # Or add 10 pods every 15s
+          periodSeconds: 15
+      selectPolicy: Max                    # Use whichever adds MORE pods
+
+    # Scale DOWN — conservative (avoid flapping)
+    scaleDown:
+      stabilizationWindowSeconds: 300     # 5 min window before scaling down
+      policies:
+        - type: Percent
+          value: 10                        # Remove max 10% of pods per minute
+          periodSeconds: 60
+      selectPolicy: Min                   # Use whichever removes FEWER pods
